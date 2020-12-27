@@ -10,6 +10,7 @@ RUN pip install Django==3.1.2 \
 
 RUN mkdir /code
 WORKDIR /code
+COPY . /code
 
 COPY docker-entrypoint.sh /usr/local/bin/
 ENTRYPOINT ["bash", "docker-entrypoint.sh"]

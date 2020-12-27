@@ -18,7 +18,6 @@ async def classify(request):
         response = {
             'intents': classifiers[model].predict(text)
         }
-        print(response)
         return JsonResponse(response)
 
-    return HttpResponse(status=404)
+    return HttpResponse(status=400)
