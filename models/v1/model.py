@@ -1,11 +1,12 @@
 import csv
 import os
 import numpy as np
-from keras.layers import Input, Dense, Embedding, Activation, Add, Dot, Lambda, Flatten, Dropout
+from keras.layers import Input, Dense, Embedding, Activation, Add, Dot, Lambda, Flatten, Dropout, LayerNormalization, Reshape
 from keras.models import Model
 from keras.optimizers import Adam
-from keras.backend import shape, arange, sin, cos, cast, pow, stack, flatten, tile, transpose, reshape, expand_dims
+from keras import backend as K
 from gensim.corpora import Dictionary
+from sklearn.model_selection import StratifiedKFold 
 
 class Classifier():
 
@@ -34,73 +35,85 @@ class Classifier():
 
         return terms
 
-    def get_model(self):
+    def get_model(self, n_layers=1):
+
+        K.clear_session()
 
         term_count = len(self.terms.token2id)
         class_count = len(self.classes.token2id)
         depth = 64
+        per_sqrt_depth = 1 / 8
         half_depth = 32
+        dropout = 0.2
+        query_length = self.query_length*2+1
 
-        queries = Input(shape=(self.query_length*2+1,), dtype='int32')
+        queries = Input(shape=(query_length), dtype='int32')
 
         # Token Embedding
-        query = Embedding(term_count+1, depth, input_length=self.query_length*2+1, mask_zero=True)(queries)
+        query = Embedding(term_count+1, depth, input_length=query_length, mask_zero=True)(queries)
 
         # Positional Encoding
         def positional_encoding(x):
             dtype = x.dtype
             batch_size, length, depth = x.shape
 
-            pos = arange(0, stop=length)
-            pos = expand_dims(pos, 1)
-            pos = tile(pos, (1, half_depth))
-            pos = cast(pos, dtype)
+            pos = K.arange(0, stop=length)
+            pos = K.expand_dims(pos, 1)
+            pos = K.tile(pos, (1, half_depth))
+            pos = K.cast(pos, dtype)
 
-            pe1 = arange(0, stop=depth, step=2)
-            pe1 = expand_dims(pe1, 0)
-            pe1 = tile(pe1, (length, 1))
-            pe1 = cast(pe1, dtype)
+            pe1 = K.arange(0, stop=depth, step=2)
+            pe1 = K.expand_dims(pe1, 0)
+            pe1 = K.tile(pe1, (length, 1))
+            pe1 = K.cast(pe1, dtype)
 
-            pe2 = arange(1, stop=depth, step=2)
-            pe2 = expand_dims(pe2, 0)
-            pe2 = tile(pe2, (length, 1))
-            pe2 = cast(pe2, dtype)
+            pe2 = K.arange(1, stop=depth, step=2)
+            pe2 = K.expand_dims(pe2, 0)
+            pe2 = K.tile(pe2, (length, 1))
+            pe2 = K.cast(pe2, dtype)
 
-            pe1_ = pow(10000.0, (pe1 / depth))
-            pe1_ = sin(pos / pe1_)
+            pe1_ = K.pow(10000.0, (pe1 / depth))
+            pe1_ = K.sin(pos / pe1_)
 
-            pe2_ = pow(10000.0, (pe1 / depth))
-            pe2_ = cos(pos / pe2_)
+            pe2_ = K.pow(10000.0, (pe1 / depth))
+            pe2_ = K.cos(pos / pe2_)
 
-            a = stack([pe1_, pe2_], axis=2)
-            a = reshape(a, (length, depth))
+            a = K.stack([pe1_, pe2_], axis=2)
+            a = K.reshape(a, (length, depth))
 
             return x + a
         query = Lambda(positional_encoding)(query)
 
-        # Self-Attention
-        q = Dense(depth, use_bias=False)(query) # [batch_size, q_length, depth]
-        k = Dense(depth, use_bias=False)(query) # [batch_size, k_length, depth]
-        v = Dense(depth, use_bias=False)(query) # [batch_size, v_length, depth] k_length=v_length
-        logit = Dot(1)([q, k]) # [batch_size, q_length, k_length]
-        attention_weight = Activation('softmax')(logit) # [batch_size, q_length, k_length]
-        attention_weight = Dropout(0.2)(attention_weight)
-        attention_output = Dot((2, 1))([k, attention_weight]) # [batch_size, q_length, depth]
-        attention_output = Dense(depth, use_bias=False)(attention_output) # [batch_size, q_length, depth]
-        attention_output = Dropout(0.2)(attention_output)
-        attention_output = Add()([query, attention_output]) # [batch_size, q_length, depth]
-        query = attention_output # [batch_size, q_length, depth]
+        for _ in range(n_layers):
+            # Self-Attention
+            q = Dense(depth, use_bias=False)(query) # [batch_size, q_length, depth]
+            k = Dense(depth, use_bias=False)(query) # [batch_size, k_length, depth]
+            v = Dense(depth, use_bias=False)(query) # [batch_size, v_length, depth]
+            logit = Dot(2)([q, k]) # [batch_size, q_length, k_length]
+            logit = Lambda(lambda x: x * per_sqrt_depth)(logit)
+            attention_weight = Activation('softmax')(logit) # [batch_size, q_length, k_length]
+            attention_weight = Dropout(dropout)(attention_weight)
+            attention_output = Dot(1)([attention_weight, v]) # [batch_size, q_length, depth]
+            attention_output = Dense(depth, use_bias=False)(attention_output) # [batch_size, q_length, depth]
+            attention_output = Dropout(dropout)(attention_output)
 
-        # Feedforward Network
-        ffn = Dense(depth*4, use_bias=True, activation='relu')(query) # [batch_size, q_length, depth*4]
-        ffn = Dropout(0.2)(ffn)
-        ffn = Dense(depth, use_bias=True)(ffn) # [batch_size, q_length, depth]
-        ffn = Dropout(0.2)(ffn)
-        ffn = Add()([query, ffn]) # [batch_size, q_length, depth]
-        query = ffn # [batch_size, q_length, depth]
+            # Residual Connection & Layer Normalization
+            query = Add()([query, attention_output]) # [batch_size, q_length, depth]
+            query = LayerNormalization()(query) # [batch_size, q_length, depth]
+
+            # Position-wise Feed-Forward Networks
+            ffn_output = Dense(depth*4, use_bias=True)(query) # [batch_size, q_length, depth*4]
+            ffn_output = Activation('relu')(ffn_output)
+            ffn_output = Dropout(dropout)(ffn_output)
+            ffn_output = Dense(depth, use_bias=True)(ffn_output) # [batch_size, q_length, depth]
+            ffn_output = Dropout(dropout)(ffn_output)
+
+            # Residual Connection & Layer Normalization
+            query = Add()([query, ffn_output]) # [batch_size, q_length, depth]
+            query = LayerNormalization()(query) # [batch_size, q_length, depth]
 
         # Classifier
-        classes = Lambda(lambda x: x[:, :1, :], output_shape=(1,))(query) # [batch_size, 1, depth]
+        classes = Lambda(lambda x: x[:, :1, :], output_shape=(1, depth))(query) # [batch_size, 1, depth]
         classes = Flatten()(classes) # [batch_size, depth]
         classes = Dense(class_count, use_bias=True)(classes) # [batch_size, classes]
         classes = Activation('softmax')(classes) # [batch_size, classes]
@@ -158,11 +171,46 @@ class Classifier():
                 data_queries.append(terms)
                 data_classes.append(clas)
 
-        self.model = self.get_model()
+        data_queries = np.array(data_queries)
+        data_classes = np.array(data_classes)
 
-        self.model.compile(optimizer=Adam(lr=0.0001, beta_2=0.98), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
-        self.model.fit(data_queries, data_classes, epochs=5000, batch_size=128)
+        cv_parameters = [
+            {'epochs': 100, 'layers': 1}, # accuracy: 0.143201 (std 0.004911)
+            {'epochs': 250, 'layers': 1}, # accuracy: 0.482982 (std 0.275570)
+            {'epochs': 500, 'layers': 1}, # accuracy: 0.812202 (std 0.044028) @
+            {'epochs': 1000, 'layers': 1}, # accuracy: 0.791053 (std 0.053435)
+            {'epochs': 2500, 'layers': 1}, # accuracy: 0.786430 (std 0.043388)
+            {'epochs': 100, 'layers': 2},
+            {'epochs': 250, 'layers': 2},
+            {'epochs': 500, 'layers': 2}, # accuracy: 0.805144 (std 0.009774)
+            {'epochs': 1000, 'layers': 2},
+        ]
+        n_cv = len(cv_parameters)
 
+        n_kf = 5
+        cv_indexes = []
+        for train_indexes, test_indexes in StratifiedKFold(n_splits=n_kf, shuffle=True).split(data_queries, data_classes):
+            cv_indexes.append((train_indexes, test_indexes))
+
+        cv_scores = []
+        for i, params in enumerate(cv_parameters, 1):
+            kf_scores = []
+            for j, (train_indexes, test_indexes) in enumerate(cv_indexes, 1):
+                self.model = self.get_model(n_layers=params['layers'])
+                self.model.compile(optimizer=Adam(lr=0.0001, beta_1=0.9, beta_2=0.98, epsilon=1e-9), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+                self.model.fit(data_queries[train_indexes], data_classes[train_indexes], epochs=params['epochs'], batch_size=128, verbose=0)
+                scores = self.model.evaluate(data_queries[test_indexes], data_classes[test_indexes], verbose=0)
+                accuracy = scores[1]
+                kf_scores.append(accuracy)
+                print('kf progress: %d/%d %d/%d accuracy: %f'%(i, n_cv, j, n_kf, accuracy))
+            print('cv progress: %d/%d accuracy: %f (std %f)'%(i, n_cv, np.mean(kf_scores), np.std(kf_scores)))
+            cv_scores.append(np.mean(kf_scores))
+
+        params = cv_parameters[np.argmax(cv_scores)]
+
+        self.model = self.get_model(n_layers=params['layers'])
+        self.model.compile(optimizer=Adam(lr=0.0001, beta_1=0.9, beta_2=0.98, epsilon=1e-9), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+        self.model.fit(data_queries, data_classes, epochs=params['epochs'], batch_size=128, verbose=0)
         self.model.save_weights(os.path.join('build', '%s-weights.h5'%name))
         self.terms.save(os.path.join('build', '%s-terms.dct'%name))
         self.classes.save(os.path.join('build', '%s-classes.dct'%name))
