@@ -1,7 +1,9 @@
 import csv
 import os
+import json
 import numpy as np
-from keras.layers import Input, Dense, Embedding, Activation, Add, Dot, Lambda, Flatten, Dropout, LayerNormalization, Reshape
+import tensorflow as tf
+from keras.layers import Input, Dense, Embedding, Activation, Add, Dot, Lambda, Flatten, Dropout, LayerNormalization
 from keras.models import Model
 from keras.optimizers import Adam
 from keras import backend as K
@@ -127,10 +129,13 @@ class Classifier():
 
     def load(self, name):
 
+        with open(os.path.join('build', '%s-parameters.json'%name), 'r') as f:
+            parameters = json.load(f)
+
         self.terms = Dictionary.load(os.path.join('build', '%s-terms.dct'%name))
         self.classes = Dictionary.load(os.path.join('build', '%s-classes.dct'%name))
 
-        self.model = self.get_model()
+        self.model = self.get_model(n_layers=parameters['layers'])
 
         self.model.load_weights(os.path.join('build', '%s-weights.h5'%name))
 
@@ -177,7 +182,7 @@ class Classifier():
         cv_parameters = [
             {'epochs': 100, 'layers': 1}, # accuracy: 0.143201 (std 0.004911)
             {'epochs': 250, 'layers': 1}, # accuracy: 0.482982 (std 0.275570)
-            {'epochs': 500, 'layers': 1}, # accuracy: 0.812202 (std 0.044028) @
+            {'epochs': 500, 'layers': 1}, # accuracy: 0.812202 (std 0.044028)
             {'epochs': 1000, 'layers': 1}, # accuracy: 0.791053 (std 0.053435)
             {'epochs': 2500, 'layers': 1}, # accuracy: 0.786430 (std 0.043388)
             {'epochs': 100, 'layers': 2},
@@ -214,6 +219,8 @@ class Classifier():
         self.model.save_weights(os.path.join('build', '%s-weights.h5'%name))
         self.terms.save(os.path.join('build', '%s-terms.dct'%name))
         self.classes.save(os.path.join('build', '%s-classes.dct'%name))
+        with open(os.path.join('build', '%s-parameters.json'%name), 'w') as f:
+            json.dump(params, f)
 
         return self
 
