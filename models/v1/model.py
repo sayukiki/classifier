@@ -1,14 +1,11 @@
 import csv
 import os
 import json
+import math
 import numpy as np
 import tensorflow as tf
-from keras.layers import Input, Dense, Embedding, Activation, Add, Dot, Lambda, Flatten, Dropout, LayerNormalization
-from keras.models import Model
-from keras.optimizers import Adam
-from keras import backend as K
 from gensim.corpora import Dictionary
-from sklearn.model_selection import StratifiedKFold 
+from sklearn.model_selection import StratifiedKFold
 
 class Classifier():
 
@@ -39,7 +36,7 @@ class Classifier():
 
     def get_model(self, n_layers=1):
 
-        K.clear_session()
+        tf.keras.backend.clear_session()
 
         term_count = len(self.terms.token2id)
         class_count = len(self.classes.token2id)
@@ -49,80 +46,80 @@ class Classifier():
         dropout = 0.2
         query_length = self.query_length*2+1
 
-        queries = Input(shape=(query_length), dtype='int32')
+        queries = tf.keras.Input(shape=(query_length), dtype='int32')
 
         # Token Embedding
-        query = Embedding(term_count+1, depth, input_length=query_length, mask_zero=True)(queries)
+        query = tf.keras.layers.Embedding(term_count+1, depth, input_length=query_length, mask_zero=True)(queries)
 
         # Positional Encoding
         def positional_encoding(x):
             dtype = x.dtype
             batch_size, length, depth = x.shape
 
-            pos = K.arange(0, stop=length)
-            pos = K.expand_dims(pos, 1)
-            pos = K.tile(pos, (1, half_depth))
-            pos = K.cast(pos, dtype)
+            pos = tf.range(0, length)
+            pos = tf.expand_dims(pos, 1)
+            pos = tf.tile(pos, (1, half_depth))
+            pos = tf.cast(pos, dtype)
 
-            pe1 = K.arange(0, stop=depth, step=2)
-            pe1 = K.expand_dims(pe1, 0)
-            pe1 = K.tile(pe1, (length, 1))
-            pe1 = K.cast(pe1, dtype)
+            pe1 = tf.range(0, depth, delta=2)
+            pe1 = tf.expand_dims(pe1, 0)
+            pe1 = tf.tile(pe1, (length, 1))
+            pe1 = tf.cast(pe1, dtype)
 
-            pe2 = K.arange(1, stop=depth, step=2)
-            pe2 = K.expand_dims(pe2, 0)
-            pe2 = K.tile(pe2, (length, 1))
-            pe2 = K.cast(pe2, dtype)
+            pe2 = tf.range(1, depth, delta=2)
+            pe2 = tf.expand_dims(pe2, 0)
+            pe2 = tf.tile(pe2, (length, 1))
+            pe2 = tf.cast(pe2, dtype)
 
-            pe1_ = K.pow(10000.0, (pe1 / depth))
-            pe1_ = K.sin(pos / pe1_)
+            pe1_ = tf.pow(10000.0, (pe1 / depth))
+            pe1_ = tf.sin(pos / pe1_)
 
-            pe2_ = K.pow(10000.0, (pe1 / depth))
-            pe2_ = K.cos(pos / pe2_)
+            pe2_ = tf.pow(10000.0, (pe1 / depth))
+            pe2_ = tf.cos(pos / pe2_)
 
-            a = K.stack([pe1_, pe2_], axis=2)
-            a = K.reshape(a, (length, depth))
+            a = tf.stack([pe1_, pe2_], axis=2)
+            a = tf.reshape(a, (length, depth))
 
             return x + a
-        query = Lambda(positional_encoding)(query)
+        query = tf.keras.layers.Lambda(positional_encoding)(query)
 
         for _ in range(n_layers):
             # Self-Attention
-            q = Dense(depth, use_bias=False)(query) # [batch_size, q_length, depth]
-            k = Dense(depth, use_bias=False)(query) # [batch_size, k_length, depth]
-            v = Dense(depth, use_bias=False)(query) # [batch_size, v_length, depth]
-            logit = Dot(2)([q, k]) # [batch_size, q_length, k_length]
-            logit = Lambda(lambda x: x * per_sqrt_depth)(logit)
-            attention_weight = Activation('softmax')(logit) # [batch_size, q_length, k_length]
-            attention_weight = Dropout(dropout)(attention_weight)
-            attention_output = Dot(1)([attention_weight, v]) # [batch_size, q_length, depth]
-            attention_output = Dense(depth, use_bias=False)(attention_output) # [batch_size, q_length, depth]
-            attention_output = Dropout(dropout)(attention_output)
+            q = tf.keras.layers.Dense(depth, use_bias=False)(query) # [batch_size, q_length, depth]
+            k = tf.keras.layers.Dense(depth, use_bias=False)(query) # [batch_size, k_length, depth]
+            v = tf.keras.layers.Dense(depth, use_bias=False)(query) # [batch_size, v_length, depth]
+            logit = tf.keras.layers.Dot(2)([q, k]) # [batch_size, q_length, k_length]
+            logit = tf.keras.layers.Lambda(lambda x: x * per_sqrt_depth)(logit)
+            attention_weight = tf.keras.layers.Activation('softmax')(logit) # [batch_size, q_length, k_length]
+            attention_weight = tf.keras.layers.Dropout(dropout)(attention_weight)
+            attention_output = tf.keras.layers.Dot(1)([attention_weight, v]) # [batch_size, q_length, depth]
+            attention_output = tf.keras.layers.Dense(depth, use_bias=False)(attention_output) # [batch_size, q_length, depth]
+            attention_output = tf.keras.layers.Dropout(dropout)(attention_output)
 
             # Residual Connection & Layer Normalization
-            query = Add()([query, attention_output]) # [batch_size, q_length, depth]
-            query = LayerNormalization()(query) # [batch_size, q_length, depth]
+            query = tf.keras.layers.Add()([query, attention_output]) # [batch_size, q_length, depth]
+            query = tf.keras.layers.LayerNormalization()(query) # [batch_size, q_length, depth]
 
             # Position-wise Feed-Forward Networks
-            ffn_output = Dense(depth*4, use_bias=True)(query) # [batch_size, q_length, depth*4]
-            ffn_output = Activation('relu')(ffn_output)
-            ffn_output = Dropout(dropout)(ffn_output)
-            ffn_output = Dense(depth, use_bias=True)(ffn_output) # [batch_size, q_length, depth]
-            ffn_output = Dropout(dropout)(ffn_output)
+            ffn_output = tf.keras.layers.Dense(depth*4, use_bias=True)(query) # [batch_size, q_length, depth*4]
+            ffn_output = tf.keras.layers.Activation('relu')(ffn_output)
+            ffn_output = tf.keras.layers.Dropout(dropout)(ffn_output)
+            ffn_output = tf.keras.layers.Dense(depth, use_bias=True)(ffn_output) # [batch_size, q_length, depth]
+            ffn_output = tf.keras.layers.Dropout(dropout)(ffn_output)
 
             # Residual Connection & Layer Normalization
-            query = Add()([query, ffn_output]) # [batch_size, q_length, depth]
-            query = LayerNormalization()(query) # [batch_size, q_length, depth]
+            query = tf.keras.layers.Add()([query, ffn_output]) # [batch_size, q_length, depth]
+            query = tf.keras.layers.LayerNormalization()(query) # [batch_size, q_length, depth]
 
         # Classifier
-        classes = Lambda(lambda x: x[:, :1, :], output_shape=(1, depth))(query) # [batch_size, 1, depth]
-        classes = Flatten()(classes) # [batch_size, depth]
-        classes = Dense(class_count, use_bias=True)(classes) # [batch_size, classes]
-        classes = Activation('softmax')(classes) # [batch_size, classes]
+        classes = tf.keras.layers.Lambda(lambda x: x[:, :1, :], output_shape=(1, depth))(query) # [batch_size, 1, depth]
+        classes = tf.keras.layers.Flatten()(classes) # [batch_size, depth]
+        classes = tf.keras.layers.Dense(class_count, use_bias=True)(classes) # [batch_size, classes]
+        classes = tf.keras.layers.Activation('softmax')(classes) # [batch_size, classes]
 
         # TODO Decoder
 
-        model = Model(inputs=[queries], outputs=[classes])
+        model = tf.keras.Model(inputs=[queries], outputs=[classes])
         # print(model.summary())
 
         return model
@@ -130,12 +127,16 @@ class Classifier():
     def load(self, name):
 
         with open(os.path.join('build', '%s-parameters.json'%name), 'r') as f:
-            parameters = json.load(f)
+            params = json.load(f)
+
+        epochs = params['epochs']
+        batch_size = params['batch_size']
+        n_layers = params['n_layers']
 
         self.terms = Dictionary.load(os.path.join('build', '%s-terms.dct'%name))
         self.classes = Dictionary.load(os.path.join('build', '%s-classes.dct'%name))
 
-        self.model = self.get_model(n_layers=parameters['layers'])
+        self.model = self.get_model(n_layers=n_layers)
 
         self.model.load_weights(os.path.join('build', '%s-weights.h5'%name))
 
@@ -179,43 +180,103 @@ class Classifier():
         data_queries = np.array(data_queries)
         data_classes = np.array(data_classes)
 
+        # Cross-Validation
         cv_parameters = [
-            {'epochs': 100, 'layers': 1}, # accuracy: 0.143201 (std 0.004911)
-            {'epochs': 250, 'layers': 1}, # accuracy: 0.482982 (std 0.275570)
-            {'epochs': 500, 'layers': 1}, # accuracy: 0.812202 (std 0.044028)
-            {'epochs': 1000, 'layers': 1}, # accuracy: 0.791053 (std 0.053435)
-            {'epochs': 2500, 'layers': 1}, # accuracy: 0.786430 (std 0.043388)
-            {'epochs': 100, 'layers': 2},
-            {'epochs': 250, 'layers': 2},
-            {'epochs': 500, 'layers': 2}, # accuracy: 0.805144 (std 0.009774)
-            {'epochs': 1000, 'layers': 2},
+            {'epochs': 100, 'batch_size': 128, 'layers': 1},
+            {'epochs': 250, 'batch_size': 128, 'layers': 1},
+            {'epochs': 500, 'batch_size': 128, 'layers': 1},
+            {'epochs': 1000, 'batch_size': 128, 'layers': 1},
+            {'epochs': 2500, 'batch_size': 128, 'layers': 1},
+            {'epochs': 100, 'batch_size': 128, 'layers': 2},
+            {'epochs': 250, 'batch_size': 128, 'layers': 2},
+            {'epochs': 500, 'batch_size': 128, 'layers': 2},
+            {'epochs': 1000, 'batch_size': 128, 'layers': 2},
         ]
         n_cv = len(cv_parameters)
 
-        n_kf = 5
+        kf = StratifiedKFold(n_splits=5, shuffle=True)
         cv_indexes = []
-        for train_indexes, test_indexes in StratifiedKFold(n_splits=n_kf, shuffle=True).split(data_queries, data_classes):
+        for train_indexes, test_indexes in kf.split(data_queries, data_classes):
             cv_indexes.append((train_indexes, test_indexes))
 
         cv_scores = []
-        for i, params in enumerate(cv_parameters, 1):
+        for i, params in enumerate(cv_parameters):
+            epochs = params['epochs']
+            batch_size = params['batch_size']
+            n_layers = params['n_layers']
+
             kf_scores = []
-            for j, (train_indexes, test_indexes) in enumerate(cv_indexes, 1):
-                self.model = self.get_model(n_layers=params['layers'])
-                self.model.compile(optimizer=Adam(lr=0.0001, beta_1=0.9, beta_2=0.98, epsilon=1e-9), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
-                self.model.fit(data_queries[train_indexes], data_classes[train_indexes], epochs=params['epochs'], batch_size=128, verbose=0)
-                scores = self.model.evaluate(data_queries[test_indexes], data_classes[test_indexes], verbose=0)
-                accuracy = scores[1]
+            for j, (train_indexes, test_indexes) in enumerate(cv_indexes):
+                model = self.get_model(n_layers=n_layers)
+                loss_object = tf.keras.losses.SparseCategoricalCrossentropy()
+                optimizer = tf.keras.optimizers.Adam(lr=0.0001, beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+
+                train_queries = data_queries[train_indexes]
+                train_classes = data_classes[train_indexes]
+                train_batches = math.ceil(len(train_queries)/batch_size)
+
+                def train_step(x, y):
+                    with tf.GradientTape() as tape:
+                        predictions = model(x)
+                        loss = loss_object(y, predictions)
+                    gradients = tape.gradient(loss, model.trainable_variables)
+                    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+                for epoch in range(epochs):
+                    for batch in range(train_batches):
+                        x = train_queries[batch*batch_size:(batch+1)*batch_size]
+                        y = train_classes[batch*batch_size:(batch+1)*batch_size]
+                        train_step(x, y)
+                        print('\rcv:%d, kf:%d, epoch:%d, batch:%d'%(i+1, j+1, epoch+1, batch+1), end='')
+
+                test_queries = data_queries[test_indexes]
+                test_classes = data_classes[test_indexes]
+                test_batches = math.ceil(len(test_queries)/batch_size)
+
+                test_loss = tf.keras.metrics.Mean(name='loss')
+                test_accuracy = tf.keras.metrics.SparseCategoricalAccuracy(name='accuracy')
+                def test_step(x, y):
+                    predictions = model(x)
+                    test_accuracy(y, predictions)
+                for batch in range(test_batches):
+                    x = test_queries[batch*batch_size:(batch+1)*batch_size]
+                    y = test_classes[batch*batch_size:(batch+1)*batch_size]
+                    test_step(x, y)
+                accuracy = test_accuracy.result()
+
+                print(', accuracy: %f'%accuracy)
                 kf_scores.append(accuracy)
-                print('kf progress: %d/%d %d/%d accuracy: %f'%(i, n_cv, j, n_kf, accuracy))
-            print('cv progress: %d/%d accuracy: %f (std %f)'%(i, n_cv, np.mean(kf_scores), np.std(kf_scores)))
-            cv_scores.append(np.mean(kf_scores))
+
+            mean_accuracy = np.mean(kf_scores)
+            std_accuracy = np.std(kf_scores)
+            print('cv:%d, mean_accuracy: %f, std_accuracy: %f'%(i+1, accuracy, std_accuracy))
+            cv_scores.append(accuracy)
 
         params = cv_parameters[np.argmax(cv_scores)]
+        print('choice parameters: %s'%json.dumps(params, ensure_ascii=False))
 
-        self.model = self.get_model(n_layers=params['layers'])
-        self.model.compile(optimizer=Adam(lr=0.0001, beta_1=0.9, beta_2=0.98, epsilon=1e-9), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
-        self.model.fit(data_queries, data_classes, epochs=params['epochs'], batch_size=128, verbose=0)
+        # Train
+        epochs = params['epochs']
+        batch_size = params['batch_size']
+        n_layers = params['n_layers']
+
+        self.model = self.get_model(n_layers=n_layers)
+        loss_object = tf.keras.losses.SparseCategoricalCrossentropy()
+        optimizer = tf.keras.optimizers.Adam(lr=0.0001, beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+        train_batches = math.ceil(len(data_queries)/batch_size)
+        def train_step(x, y):
+            with tf.GradientTape() as tape:
+                predictions = self.model(x)
+                loss = loss_object(y, predictions)
+            gradients = tape.gradient(loss, self.model.trainable_variables)
+            optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+        for epoch in range(epochs):
+            for batch in range(train_batches):
+                x = data_queries[batch*batch_size:(batch+1)*batch_size]
+                y = data_classes[batch*batch_size:(batch+1)*batch_size]
+                train_step(x, y)
+                print('\rtrain, epoch:%d, batch:%d'%(epoch+1, batch+1), end='')
+        print()
+
         self.model.save_weights(os.path.join('build', '%s-weights.h5'%name))
         self.terms.save(os.path.join('build', '%s-terms.dct'%name))
         self.classes.save(os.path.join('build', '%s-classes.dct'%name))
