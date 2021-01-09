@@ -5,3 +5,5 @@ db.sqlite3
 .DS_Store
 dummy.h5
 utils.py
+.ipynb_checkpoints
+data_analytics.ipynb
