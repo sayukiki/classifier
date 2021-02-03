@@ -1,22 +1,19 @@
-#!/usr/bin/env python
-"""Django's command-line utility for administrative tasks."""
-import os
-import sys
+from models.v1 import Classifier as ClassifierV1
 
+def build_classifier(name, data):
 
-def main():
-    """Run administrative tasks."""
-    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'classifier.settings')
-    try:
-        from django.core.management import execute_from_command_line
-    except ImportError as exc:
-        raise ImportError(
-            "Couldn't import Django. Are you sure it's installed and "
-            "available on your PYTHONPATH environment variable? Did you "
-            "forget to activate a virtual environment?"
-        ) from exc
-    execute_from_command_line(sys.argv)
+    return ClassifierV1().build(name, data)
 
+def load_classifier(name):
+
+    return ClassifierV1().load(name)
 
 if __name__ == '__main__':
-    main()
+
+    classifier = build_classifier('it-helpdesk-20210109', 'dataset/it-helpdesk-20210109.csv')
+
+    classifier = load_classifier('it-helpdesk-20210109')
+
+    print(classifier.predict('パソコンが壊れた'))
+    print(classifier.predict('携帯電話がつながらない'))
+    print(classifier.predict('音が出なくなった'))
